@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 import aiohttp
+import uuid
 
 
 
@@ -366,80 +367,119 @@ async def infractions_list(interaction: discord.Interaction, user: discord.User)
 #⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
 #⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
 #⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
-# LASD Warrant
 
 
-# Autocomplete function
-async def roblox_username_autocomplete(interaction: discord.Interaction, current: str):
-    if not current:
-        return []
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"https://users.roblox.com/v1/users/search?keyword={current}&limit=10") as resp:
-            if resp.status != 200:
-                return []
-            data = await resp.json()
-            return [
-                app_commands.Choice(name=user["name"], value=user["name"])
-                for user in data.get("data", [])
-            ]
+DATA_FILE = 'warrants.json'
+REQUIRED_ROLE_IDS = [1311735780699537457, 1340506488187392080, 1316556364285218827]  # Replace with your actual allowed role IDs
+PING_ROLE_ID = 1339018541478711306  # Role to ping on new warrant log
 
-# Get Roblox user ID from username
-async def get_roblox_user_id(username: str):
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://users.roblox.com/v1/usernames/users", json={"usernames": [username]}) as resp:
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"warrants": [], "completions": {}}
+    with open(DATA_FILE, 'r') as f:
+        return json.load(f)
 
-            if resp.status != 200:
-                return None
-            data = await resp.json()
-            try:
-                return data["data"][0]["id"]
-            except (KeyError, IndexError):
-                return None
+def save_data(data):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
-@bot.tree.command(name="log-warrant", description="Logs a warrant")
-@app_commands.describe(
-    suspect="What is the Roblox username of the suspect?",
-    charges="What are the charges of the suspect?"
-)
-@app_commands.autocomplete(suspect=roblox_username_autocomplete)
-async def log_warrant(
-    interaction: discord.Interaction,
-    suspect: str,
-    charges: str
-):
-    allowed_roles = [1311735780699537457, 1316556364285218827, 1340506488187392080, 1354280877646942309]
-    member_roles = [role.id for role in interaction.user.roles]
-    if not any(role in allowed_roles for role in member_roles):
-        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+data = load_data()
+
+# --- Role Check ---
+def has_required_role(interaction: discord.Interaction, role_ids: list[int]) -> bool:
+    return any(role.id in role_ids for role in interaction.user.roles)
+
+# --- Bot Setup ---
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
+
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
+
+# --- Commands ---
+
+@tree.command(name="ping", description="Test if bot is responsive")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong!", ephemeral=True)
+
+@tree.command(name="warrant-log", description="Log a warrant on a user")
+@app_commands.describe(username="Username", reason="Reason for warrant", date="Date of issue")
+async def warrant_log(interaction: discord.Interaction, username: str, reason: str, date: str):
+    if not has_required_role(interaction, REQUIRED_ROLE_IDS):
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
         return
 
-    user_id = await get_roblox_user_id(suspect)
-    if not user_id:
-        await interaction.response.send_message("❌ Unable to find that Roblox user.", ephemeral=True)
+    warrant_id = str(uuid.uuid4())[:8]
+    data["warrants"].append({
+        "id": warrant_id,
+        "username": username,
+        "reason": reason,
+        "date": date,
+        "completed": False
+    })
+    save_data(data)
+
+    # Send ephemeral confirmation
+    await interaction.response.send_message(f"Warrant logged! (ID: {warrant_id})", ephemeral=True)
+
+    # Public ping message
+    mention = f"<@&{PING_ROLE_ID}>"
+    await interaction.channel.send(f"{mention} A new warrant has been logged for **{username}**.\nReason: `{reason}`\nDate: `{date}`\nWarrant ID: `{warrant_id}`")
+
+@tree.command(name="warrant-view", description="View active warrants for a user")
+@app_commands.describe(username="Username to view warrants for")
+async def warrant_view(interaction: discord.Interaction, username: str):
+    if not has_required_role(interaction, REQUIRED_ROLE_IDS):
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
         return
 
-    avatar_url = f"https://www.roblox.com/headshot-thumbnail/image?userId={user_id}&width=420&height=420&format=png"
+    warrants = [w for w in data["warrants"] if w["username"].lower() == username.lower() and not w["completed"]]
+    if not warrants:
+        await interaction.response.send_message(f"No active warrants found for {username}.", ephemeral=True)
+    else:
+        msg = f"**Active Warrants for {username}:**\n"
+        for w in warrants:
+            msg += f"- ID: `{w['id']}`, Reason: {w['reason']}, Date: {w['date']}\n"
+        await interaction.response.send_message(msg, ephemeral=True)
 
-    channel = bot.get_channel(1340799241639039007)
-    embed = discord.Embed(
-        title="LASD Warrant",
-        description=(
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-            f"**Deputy:** {interaction.user.mention}\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-            f"**Suspect:** {suspect}\n"
-            f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-            f"**Charges:** {charges}\n"
-        ),
-        color=discord.Color.dark_gold()
-    )
-    embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1311735780783292482/1311742608334262375/png-clipart-los-angeles-county-sheriff-s-department-police-claremont-board-of-supervisors-sheriff-removebg-preview.png")
-    embed.set_image(url=avatar_url)
+@tree.command(name="warrant-complete", description="Mark a warrant as completed")
+@app_commands.describe(warrant_id="ID of the warrant to complete")
+async def warrant_complete(interaction: discord.Interaction, warrant_id: str):
+    if not has_required_role(interaction, REQUIRED_ROLE_IDS):
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
 
-    await channel.send(embed=embed)
-    await interaction.response.send_message("✅ Warrant has been logged.", ephemeral=True)
+    for w in data["warrants"]:
+        if w["id"] == warrant_id and not w["completed"]:
+            w["completed"] = True
+            user_id = str(interaction.user.id)
+            data["completions"][user_id] = data["completions"].get(user_id, 0) + 1
+            save_data(data)
+            await interaction.response.send_message("Warrant completed!", ephemeral=True)
+            return
 
+    await interaction.response.send_message("Warrant ID not found or already completed.", ephemeral=True)
 
+@tree.command(name="warrant-completed", description="See how many warrants you have completed")
+async def warrant_completed(interaction: discord.Interaction):
+    if not has_required_role(interaction, REQUIRED_ROLE_IDS):
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+
+    user_id = str(interaction.user.id)
+    completed_count = data["completions"].get(user_id, 0)
+    await interaction.response.send_message(f"You have completed **{completed_count}** warrant(s).", ephemeral=True)
+
+# --- Sync and Run Bot ---
+
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print(f'Logged in as {bot.user} (ID: {bot.user.id})')
+
+bot.run('YOUR_BOT_TOKEN')  # Replace with your actual bot token
 
 
 #⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
